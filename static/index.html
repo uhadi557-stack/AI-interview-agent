@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speaking Interview Practice</title>
+<style>
+  :root {
+    --bg: #eef1f4; --panel: #ffffff; --ink: #1b2430; --muted: #5d6a7a;
+    --line: #d5dbe3; --accent: #0f6b6b; --accent-ink: #ffffff; --alert: #b3472b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131a22; --panel: #1b2430; --ink: #e8edf2; --muted: #9aa8b8;
+            --line: #2c3948; --accent: #3fb0a8; --accent-ink: #0b1a19; --alert: #e07a5f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.55 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.1rem; margin: 0 0 8px; }
+  p.sub { color: var(--muted); margin: 0 0 24px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+            padding: 20px; margin-bottom: 16px; }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; }
+  input[type=text], input[type=file], textarea {
+    width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--ink); font: inherit; }
+  textarea { min-height: 110px; resize: vertical; }
+  button { font: inherit; font-weight: 600; padding: 10px 18px; border-radius: 6px; cursor: pointer;
+           border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
+  button.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .hidden { display: none; }
+  .question { font-size: 1.25rem; font-weight: 600; margin: 4px 0 16px; }
+  .meta { color: var(--muted); font-size: .9rem; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  #mic { border-radius: 999px; width: 64px; height: 64px; padding: 0; font-size: 1.6rem; }
+  #mic.live { background: var(--alert); border-color: var(--alert); color: #fff; animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(179,71,43,.5); } 100% { box-shadow: 0 0 0 16px rgba(179,71,43,0); } }
+  @media (prefers-reduced-motion: reduce) { #mic.live { animation: none; } }
+  .score { font-size: 2.2rem; font-weight: 700; }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--accent); }
+  .dim { display: grid; grid-template-columns: 150px 1fr 40px; gap: 10px; align-items: center; margin: 6px 0; }
+  blockquote { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--accent); color: var(--muted); }
+  .error { color: var(--alert); font-weight: 600; }
+  ul { margin: 6px 0 0; padding-left: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Speaking interview practice</h1>
+  <p class="sub">Upload your CV, answer out loud, and get scored feedback on every answer.</p>
+
+  <section id="setup">
+    <label for="cv">CV (PDF or text file)</label>
+    <input id="cv" type="file" accept=".pdf,.txt">
+    <label for="prefs">Job preferences (optional)</label>
+    <input id="prefs" type="text" placeholder="e.g. Junior AI engineer, GenAI and backend">
+    <div class="row"><button id="startBtn">Start interview</button><span id="setupMsg" class="meta"></span></div>
+  </section>
+
+  <section id="interview" class="hidden">
+    <div class="meta" id="progress"></div>
+    <div class="question" id="question"></div>
+    <div class="row">
+      <button id="mic" aria-label="Start or stop recording">🎤</button>
+      <button class="secondary" id="replayBtn">Hear question again</button>
+    </div>
+    <p class="meta" id="micNote">Press the mic, speak, press again to stop. You can edit the transcript below.</p>
+    <label for="answer">Your answer</label>
+    <textarea id="answer" placeholder="Your spoken answer appears here. You can also type."></textarea>
+    <div class="row"><button id="submitBtn">Submit answer</button><span id="busy" class="meta"></span></div>
+  </section>
+
+  <section id="feedback" class="hidden"></section>
+  <section id="report" class="hidden"></section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function el(tag, text, cls) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; }
+
+let sessionId = null, currentQuestion = "";
+let recog = null, listening = false, startedAt = 0, spokenSeconds = 0, finalText = "";
+
+// ---------- Speech output ----------
+function speak(text) {
+  if (!("speechSynthesis" in window)) return;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+}
+
+// ---------- Speech input (Chrome / Edge) ----------
+function setupRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { $("micNote").textContent = "Voice input needs Chrome or Edge. You can type your answer instead."; $("mic").disabled = true; return; }
+  recog = new SR();
+  recog.continuous = true; recog.interimResults = true; recog.lang = "en-US";
+  recog.onresult = (e) => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += t + " "; else interim += t;
+    }
+    $("answer").value = finalText + interim;
+  };
+  recog.onend = () => { if (listening) { try { recog.start(); } catch (_) {} } };
+  recog.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      listening = false; $("mic").classList.remove("live");
+      $("micNote").textContent = "Microphone blocked. Allow mic access in the browser, or type your answer.";
+    }
+  };
+}
+
+function toggleMic() {
+  if (!recog) return;
+  speechSynthesis.cancel();
+  if (listening) {
+    listening = false; recog.stop(); $("mic").classList.remove("live");
+    spokenSeconds += (Date.now() - startedAt) / 1000;
+  } else {
+    finalText = $("answer").value ? $("answer").value + " " : "";
+    listening = true; startedAt = Date.now(); $("mic").classList.add("live");
+    try { recog.start(); } catch (_) {}
+  }
+}
+
+// ---------- API ----------
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Request failed (" + res.status + ")");
+  return data;
+}
+
+function showQuestion(q, num, total, isFollowup) {
+  currentQuestion = q;
+  $("progress").textContent = isFollowup ? "Follow-up question" : "Question " + num + " of " + total;
+  $("question").textContent = q;
+  $("answer").value = ""; finalText = ""; spokenSeconds = 0;
+  speak(q);
+}
+
+async function start() {
+  const file = $("cv").files[0];
+  if (!file) { $("setupMsg").textContent = "Choose a CV file first."; $("setupMsg").className = "error"; return; }
+  $("startBtn").disabled = true; $("setupMsg").className = "meta"; $("setupMsg").textContent = "Reading your CV and preparing questions...";
+  const form = new FormData(); form.append("cv", file); form.append("job_prefs", $("prefs").value);
+  try {
+    const d = await api("/api/start", { method: "POST", body: form });
+    sessionId = d.session_id;
+    $("setup").classList.add("hidden"); $("interview").classList.remove("hidden");
+    showQuestion(d.question, d.question_number, d.total_questions, false);
+  } catch (err) {
+    $("setupMsg").className = "error"; $("setupMsg").textContent = err.message; $("startBtn").disabled = false;
+  }
+}
+
+async function submitAnswer() {
+  if (listening) toggleMic();
+  const answer = $("answer").value.trim();
+  if (!answer) { $("busy").textContent = "Say or type an answer first."; return; }
+  $("submitBtn").disabled = true; $("busy").textContent = "Evaluating your answer...";
+  try {
+    const d = await api("/api/answer", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, answer, duration_seconds: spokenSeconds }),
+    });
+    renderFeedback(d);
+    if (d.finished) { $("interview").classList.add("hidden"); renderReport(d.report); }
+    else showQuestion(d.question, d.question_number, d.total_questions, d.is_followup);
+  } catch (err) {
+    $("busy").className = "error"; $("busy").textContent = err.message; return;
+  } finally { $("submitBtn").disabled = false; }
+  $("busy").className = "meta"; $("busy").textContent = "";
+}
+
+// ---------- Rendering (textContent only: model output is never injected as HTML) ----------
+function renderFeedback(d) {
+  const box = $("feedback"); box.replaceChildren(); box.classList.remove("hidden");
+  box.append(el("h2", "Feedback on your last answer"), el("div", Math.round(d.score) + "%", "score"));
+  box.append(el("p", d.evaluation.feedback));
+  if (d.score < 60) { box.append(el("strong", "A stronger answer could sound like this:"), el("blockquote", d.evaluation.stronger_answer)); }
+  const m = d.delivery, bits = [m.word_count + " words", m.filler_count + " filler words"];
+  if (m.wpm) bits.push(m.wpm + " words per minute");
+  box.append(el("p", bits.join(", "), "meta"));
+}
+
+function renderReport(r) {
+  const box = $("report"); box.replaceChildren(); box.classList.remove("hidden");
+  box.append(el("h2", "Interview result"), el("div", Math.round(r.overall) + "%", "score"));
+  const labels = { technical_accuracy: "Technical accuracy", relevance: "Relevance", depth: "Depth", structure: "Structure", clarity: "Clarity" };
+  for (const k in labels) {
+    const row = el("div", undefined, "dim"), bar = el("div", undefined, "bar"), fill = document.createElement("span");
+    fill.style.width = (r.dimensions[k] * 10) + "%"; bar.append(fill);
+    row.append(el("span", labels[k]), bar, el("span", r.dimensions[k] + "/10")); box.append(row);
+  }
+  const dl = r.delivery;
+  box.append(el("p", "Delivery: " + (dl.avg_wpm ? dl.avg_wpm + " words per minute, " : "") + dl.total_fillers + " filler words in total.", "meta"));
+  for (const [title, items] of [["Strengths", r.strengths], ["Weaknesses", r.weaknesses], ["What to practice next", r.advice]]) {
+    box.append(el("h2", title)); const ul = el("ul"); items.forEach((t) => ul.append(el("li", t))); box.append(ul);
+  }
+  const again = el("button", "Start a new interview"); again.style.marginTop = "16px"; again.onclick = () => location.reload(); box.append(again);
+}
+
+$("startBtn").onclick = start;
+$("submitBtn").onclick = submitAnswer;
+$("mic").onclick = toggleMic;
+$("replayBtn").onclick = () => speak(currentQuestion);
+setupRecognition();
+</script>
+</body>
+</html>
